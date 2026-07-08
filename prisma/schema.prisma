@@ -127,3 +127,65 @@ model ProviderConfigAudit {
   @@index([providerCode])
   @@index([createdAt])
 }
+
+model ProviderPlayer {
+  id           String   @id @default(cuid())
+  providerCode String
+  memberId     String
+  username     String
+  displayName  String?
+  currency     String   @default("THB")
+  language     String   @default("th")
+  status       String   @default("active")
+  rawData      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([providerCode, memberId])
+  @@unique([providerCode, username])
+  @@index([memberId])
+  @@index([providerCode])
+  @@index([status])
+}
+
+model GameRound {
+  id             String   @id @default(cuid())
+  providerCode   String
+  memberId       String
+  gameCode       String
+  roundId        String
+  betAmount      Decimal  @default(0)
+  winAmount      Decimal  @default(0)
+  validBetAmount Decimal  @default(0)
+  status         String   @default("open")
+  rawData        String?
+  startedAt      DateTime @default(now())
+  settledAt      DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([providerCode, roundId])
+  @@index([memberId])
+  @@index([providerCode])
+  @@index([gameCode])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ProviderApiLog {
+  id             String   @id @default(cuid())
+  providerCode   String
+  action         String
+  direction      String   @default("inbound")
+  requestMasked  String?
+  responseMasked String?
+  status         String   @default("success")
+  durationMs     Int      @default(0)
+  errorCode      String?
+  createdAt      DateTime @default(now())
+
+  @@index([providerCode])
+  @@index([action])
+  @@index([status])
+  @@index([createdAt])
+}

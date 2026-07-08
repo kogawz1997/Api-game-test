@@ -1,0 +1,91 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model GameProvider {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  logoUrl   String?
+  status    String   @default("active")
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  games     Game[]
+}
+
+model Game {
+  id           String   @id @default(cuid())
+  providerCode String
+  gameCode     String   @unique
+  name         String
+  category     String
+  iconUrl      String?
+  status       String   @default("active")
+  isHot        Boolean  @default(false)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  provider     GameProvider @relation(fields: [providerCode], references: [code], onDelete: Cascade)
+
+  @@index([providerCode])
+  @@index([category])
+  @@index([status])
+}
+
+model ProviderWallet {
+  id           String   @id @default(cuid())
+  memberId     String
+  providerCode String
+  balance      Decimal  @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([memberId, providerCode])
+  @@index([memberId])
+  @@index([providerCode])
+}
+
+model ProviderTransaction {
+  id                    String   @id @default(cuid())
+  memberId              String
+  providerCode          String
+  gameCode              String?
+  type                  String
+  amount                Decimal
+  beforeBalance         Decimal
+  afterBalance          Decimal
+  referenceId           String   @unique
+  providerTransactionId String?
+  status                String   @default("success")
+  rawRequest            String?
+  rawResponse           String?
+  createdAt             DateTime @default(now())
+
+  @@index([memberId])
+  @@index([providerCode])
+  @@index([type])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ProviderSession {
+  id           String   @id @default(cuid())
+  memberId     String
+  providerCode String
+  gameCode     String
+  sessionToken String   @unique
+  launchUrl    String
+  expiresAt    DateTime
+  status       String   @default("active")
+  createdAt    DateTime @default(now())
+
+  @@index([memberId])
+  @@index([providerCode])
+  @@index([gameCode])
+}

@@ -89,3 +89,41 @@ model ProviderSession {
   @@index([providerCode])
   @@index([gameCode])
 }
+
+model ProviderConfig {
+  id               String   @id @default(cuid())
+  providerCode     String   @unique
+  apiBaseUrl       String
+  merchantIdEnc    String?
+  agentIdEnc       String?
+  apiKeyEnc        String?
+  secretKeyEnc     String?
+  webhookSecretEnc String?
+  ipWhitelist      String?
+  callbackUrl      String?
+  walletMode       String   @default("transfer")
+  currency         String   @default("THB")
+  language         String   @default("th")
+  status           String   @default("active")
+  lastTestStatus   String?
+  lastTestMessage  String?
+  lastTestAt       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([providerCode])
+  @@index([status])
+}
+
+model ProviderConfigAudit {
+  id           String   @id @default(cuid())
+  providerCode String
+  action       String
+  changedBy    String?
+  maskedBefore String?
+  maskedAfter  String?
+  createdAt    DateTime @default(now())
+
+  @@index([providerCode])
+  @@index([createdAt])
+}

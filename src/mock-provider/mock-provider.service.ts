@@ -3,8 +3,9 @@ import { Prisma, ProviderConfig, ProviderTransaction } from '@prisma/client';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
 import { ProviderClientFactory } from '../provider-clients/provider-client.factory';
 import { ProviderClientResponse, ProviderRuntimeConfig } from '../provider-clients/provider-client.types';
-import { BalanceQueryDto, GameQueryDto, LaunchGameDto, MoneyActionDto, ProviderQueryDto, SimulateResultDto, TransactionsQueryDto } from './dto/common.dto';
 import { PrismaService } from '../prisma/prisma.service';
+import { AdvancedGameService } from './advanced-game.service';
+import { BalanceQueryDto, GameQueryDto, LaunchGameDto, MoneyActionDto, ProviderQueryDto, SimulateResultDto, TransactionsQueryDto } from './dto/common.dto';
 
 type TransactionType = 'transfer_in' | 'transfer_out' | 'bet' | 'win' | 'result';
 type ExternalAction = 'launch' | 'transfer_in' | 'transfer_out' | 'balance';
@@ -14,6 +15,7 @@ export class MockProviderService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly providerClientFactory: ProviderClientFactory,
+    private readonly advancedGameService: AdvancedGameService,
   ) {}
 
   getGatewayManifest() {
@@ -21,31 +23,17 @@ export class MockProviderService {
       gatewayUrl: '/api/game',
       method: 'POST',
       description: 'Single endpoint gateway. Send action with payload to call every mock game provider function.',
-      credentialSettings: {
-        description: 'Use these actions for the Credential settings page. Secret fields are stored encrypted-like and returned as masked only.',
-        actions: ['provider_configs', 'provider_config', 'upsert_provider_config', 'test_provider_config']
+      groups: {
+        core: ['providers', 'games', 'game', 'launch', 'transfer_in', 'transfer_out', 'balance', 'transactions'],
+        credentials: ['provider_configs', 'provider_config', 'upsert_provider_config', 'test_provider_config'],
+        players: ['create_player', 'get_player', 'disable_player'],
+        callbacks: ['callback_bet', 'callback_win', 'callback_settle', 'callback_cancel', 'callback_rollback'],
+        reports: ['provider_api_logs', 'get_round', 'report_rounds', 'report_summary', 'reconcile'],
       },
       providerClientLayer: {
         description: 'If ProviderConfig.walletMode is external, launch/transfer/balance calls are routed through ProviderClientFactory to apiBaseUrl.',
-        mode: 'transfer = internal mock wallet, external = outbound provider API call'
+        mode: 'transfer = internal mock wallet, external = outbound provider API call',
       },
-      actions: {
-        providers: { body: { action: 'providers', status: 'active' } },
-        games: { body: { action: 'games', providerCode: 'PG', category: 'slot', q: 'mahjong', status: 'active' } },
-        game: { body: { action: 'game', gameCode: 'PG-MAHJONG-WAYS' } },
-        launch: { body: { action: 'launch', memberId: 'member_001', providerCode: 'PG', gameCode: 'PG-MAHJONG-WAYS' } },
-        transfer_in: { body: { action: 'transfer_in', memberId: 'member_001', providerCode: 'PG', amount: 500, referenceId: 'TX-IN-UNIQUE-ID' } },
-        transfer_out: { body: { action: 'transfer_out', memberId: 'member_001', providerCode: 'PG', amount: 100, referenceId: 'TX-OUT-UNIQUE-ID' } },
-        balance: { body: { action: 'balance', memberId: 'member_001', providerCode: 'PG' } },
-        transactions: { body: { action: 'transactions', memberId: 'member_001', providerCode: 'PG', limit: 20 } },
-        provider_configs: { body: { action: 'provider_configs' } },
-        provider_config: { body: { action: 'provider_config', providerCode: 'PG' } },
-        upsert_provider_config: { body: { action: 'upsert_provider_config', providerCode: 'PG', apiBaseUrl: 'https://mock-pg.provider.test/api', merchantId: 'merchant_001', agentId: 'agent_001', apiKey: 'api_key_here', secretKey: 'secret_key_here', webhookSecret: 'webhook_secret_here', ipWhitelist: ['127.0.0.1'], walletMode: 'external', currency: 'THB', language: 'th', status: 'active' } },
-        test_provider_config: { body: { action: 'test_provider_config', providerCode: 'PG' } },
-        simulate_bet: { body: { action: 'simulate_bet', memberId: 'member_001', providerCode: 'PG', gameCode: 'PG-MAHJONG-WAYS', amount: 50, referenceId: 'BET-UNIQUE-ID' } },
-        simulate_win: { body: { action: 'simulate_win', memberId: 'member_001', providerCode: 'PG', gameCode: 'PG-MAHJONG-WAYS', amount: 120, referenceId: 'WIN-UNIQUE-ID' } },
-        simulate_result: { body: { action: 'simulate_result', memberId: 'member_001', providerCode: 'PG', gameCode: 'PG-MAHJONG-WAYS', betAmount: 50, winAmount: 120, referenceId: 'RESULT-UNIQUE-ID' } }
-      }
     });
   }
 
@@ -86,6 +74,20 @@ export class MockProviderService {
       case 'save_provider_config': return this.upsertProviderConfig(body);
       case 'test_provider_config':
       case 'test_config': return this.testProviderConfig(String(body.providerCode || ''));
+      case 'create_player':
+      case 'sync_player': return this.advancedGameService.createPlayer(body);
+      case 'get_player': return this.advancedGameService.getPlayer(body);
+      case 'disable_player': return this.advancedGameService.disablePlayer(body);
+      case 'callback_bet': return this.advancedGameService.callbackBet(body);
+      case 'callback_win': return this.advancedGameService.callbackWin(body);
+      case 'callback_settle': return this.advancedGameService.callbackSettle(body);
+      case 'callback_cancel': return this.advancedGameService.callbackCancel(body);
+      case 'callback_rollback': return this.advancedGameService.callbackRollback(body);
+      case 'provider_api_logs': return this.advancedGameService.getProviderApiLogs(body);
+      case 'get_round': return this.advancedGameService.getRound(body);
+      case 'report_rounds': return this.advancedGameService.getRounds(body);
+      case 'report_summary': return this.advancedGameService.reportSummary(body);
+      case 'reconcile': return this.advancedGameService.reconcile(body);
       default:
         throw new BadRequestException({ success: false, code: 'UNKNOWN_ACTION', message: `Unknown action: ${action}` });
     }
@@ -127,7 +129,7 @@ export class MockProviderService {
       walletMode: String(body.walletMode || before?.walletMode || 'transfer'),
       currency: String(body.currency || before?.currency || 'THB'),
       language: String(body.language || before?.language || 'th'),
-      status: String(body.status || before?.status || 'active')
+      status: String(body.status || before?.status || 'active'),
     };
 
     const config = await this.prisma.providerConfig.upsert({ where: { providerCode }, update: data, create: data });
@@ -138,8 +140,8 @@ export class MockProviderService {
         action: before ? 'update_provider_config' : 'create_provider_config',
         changedBy: body.changedBy ? String(body.changedBy) : 'system',
         maskedBefore: before ? JSON.stringify(this.toMaskedConfig(provider.code, provider.name, before)) : null,
-        maskedAfter: JSON.stringify(this.toMaskedConfig(provider.code, provider.name, config))
-      }
+        maskedAfter: JSON.stringify(this.toMaskedConfig(provider.code, provider.name, config)),
+      },
     });
 
     return this.ok(this.toMaskedConfig(provider.code, provider.name, config));
@@ -276,10 +278,8 @@ export class MockProviderService {
   private async callExternalProviderIfEnabled(action: ExternalAction, providerCode: string, payload: Record<string, unknown>) {
     const config = await this.prisma.providerConfig.findUnique({ where: { providerCode } });
     if (!config || config.status !== 'active' || config.walletMode !== 'external') return null;
-
     const runtime = this.toRuntimeConfig(config);
     const client = this.providerClientFactory.getClient(providerCode);
-
     if (action === 'launch') return client.launch(runtime, payload as any);
     if (action === 'transfer_in') return client.transferIn(runtime, payload as any);
     if (action === 'transfer_out') return client.transferOut(runtime, payload as any);
@@ -314,7 +314,7 @@ export class MockProviderService {
       walletMode: config.walletMode,
       currency: config.currency,
       language: config.language,
-      status: config.status
+      status: config.status,
     };
   }
 
@@ -335,47 +335,11 @@ export class MockProviderService {
   }
 
   private makeProviderTransactionId(providerCode: string, type: string) { return `${providerCode}-${type}-${randomBytes(8).toString('hex').toUpperCase()}`; }
-
-  private toTransactionResponse(transaction: ProviderTransaction, duplicated: boolean) {
-    return { id: transaction.id, memberId: transaction.memberId, providerCode: transaction.providerCode, gameCode: transaction.gameCode, type: transaction.type, amount: Number(transaction.amount), beforeBalance: Number(transaction.beforeBalance), afterBalance: Number(transaction.afterBalance), referenceId: transaction.referenceId, providerTransactionId: transaction.providerTransactionId, status: transaction.status, duplicated, createdAt: transaction.createdAt };
-  }
-
-  private toMaskedConfig(providerCode: string, providerName: string, config?: ProviderConfig) {
-    return { providerCode, providerName, configured: Boolean(config), apiBaseUrl: config?.apiBaseUrl || null, apiBaseUrlMasked: this.maskPlain(config?.apiBaseUrl || ''), apiKeyMasked: this.maskEncrypted(config?.apiKeyEnc), secretKeyMasked: this.maskEncrypted(config?.secretKeyEnc), merchantIdMasked: this.maskEncrypted(config?.merchantIdEnc), agentIdMasked: this.maskEncrypted(config?.agentIdEnc), webhookSecretMasked: this.maskEncrypted(config?.webhookSecretEnc), ipWhitelist: this.parseIpWhitelist(config?.ipWhitelist), callbackUrl: config?.callbackUrl || null, walletMode: config?.walletMode || 'transfer', currency: config?.currency || 'THB', language: config?.language || 'th', status: config?.status || 'not_configured', lastTestStatus: config?.lastTestStatus || null, lastTestMessage: config?.lastTestMessage || null, lastTestAt: config?.lastTestAt || null, updatedAt: config?.updatedAt || null, secretSafe: true };
-  }
-
-  private parseIpWhitelist(value?: string | null) {
-    if (!value) return [];
-    try {
-      const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed : [String(value)];
-    } catch {
-      return value.split(',').map((item) => item.trim()).filter(Boolean);
-    }
-  }
-
-  private encryptSecret(value: string | undefined | null) {
-    if (!value) return null;
-    const iv = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', this.secretKey(), iv);
-    const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    return `v1:${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`;
-  }
-
-  private decryptSecret(value?: string | null) {
-    if (!value) return '';
-    if (!value.startsWith('v1:')) return value;
-    try {
-      const [, ivRaw, tagRaw, encryptedRaw] = value.split(':');
-      const decipher = createDecipheriv('aes-256-gcm', this.secretKey(), Buffer.from(ivRaw, 'base64'));
-      decipher.setAuthTag(Buffer.from(tagRaw, 'base64'));
-      return Buffer.concat([decipher.update(Buffer.from(encryptedRaw, 'base64')), decipher.final()]).toString('utf8');
-    } catch {
-      return '';
-    }
-  }
-
+  private toTransactionResponse(transaction: ProviderTransaction, duplicated: boolean) { return { id: transaction.id, memberId: transaction.memberId, providerCode: transaction.providerCode, gameCode: transaction.gameCode, type: transaction.type, amount: Number(transaction.amount), beforeBalance: Number(transaction.beforeBalance), afterBalance: Number(transaction.afterBalance), referenceId: transaction.referenceId, providerTransactionId: transaction.providerTransactionId, status: transaction.status, duplicated, createdAt: transaction.createdAt }; }
+  private toMaskedConfig(providerCode: string, providerName: string, config?: ProviderConfig) { return { providerCode, providerName, configured: Boolean(config), apiBaseUrl: config?.apiBaseUrl || null, apiBaseUrlMasked: this.maskPlain(config?.apiBaseUrl || ''), apiKeyMasked: this.maskEncrypted(config?.apiKeyEnc), secretKeyMasked: this.maskEncrypted(config?.secretKeyEnc), merchantIdMasked: this.maskEncrypted(config?.merchantIdEnc), agentIdMasked: this.maskEncrypted(config?.agentIdEnc), webhookSecretMasked: this.maskEncrypted(config?.webhookSecretEnc), ipWhitelist: this.parseIpWhitelist(config?.ipWhitelist), callbackUrl: config?.callbackUrl || null, walletMode: config?.walletMode || 'transfer', currency: config?.currency || 'THB', language: config?.language || 'th', status: config?.status || 'not_configured', lastTestStatus: config?.lastTestStatus || null, lastTestMessage: config?.lastTestMessage || null, lastTestAt: config?.lastTestAt || null, updatedAt: config?.updatedAt || null, secretSafe: true }; }
+  private parseIpWhitelist(value?: string | null) { if (!value) return []; try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : [String(value)]; } catch { return value.split(',').map((item) => item.trim()).filter(Boolean); } }
+  private encryptSecret(value: string | undefined | null) { if (!value) return null; const iv = randomBytes(12); const cipher = createCipheriv('aes-256-gcm', this.secretKey(), iv); const encrypted = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]); const tag = cipher.getAuthTag(); return `v1:${iv.toString('base64')}:${tag.toString('base64')}:${encrypted.toString('base64')}`; }
+  private decryptSecret(value?: string | null) { if (!value) return ''; if (!value.startsWith('v1:')) return value; try { const [, ivRaw, tagRaw, encryptedRaw] = value.split(':'); const decipher = createDecipheriv('aes-256-gcm', this.secretKey(), Buffer.from(ivRaw, 'base64')); decipher.setAuthTag(Buffer.from(tagRaw, 'base64')); return Buffer.concat([decipher.update(Buffer.from(encryptedRaw, 'base64')), decipher.final()]).toString('utf8'); } catch { return ''; } }
   private secretKey() { return createHash('sha256').update(process.env.CREDENTIAL_ENCRYPTION_KEY || process.env.MOCK_PROVIDER_SECRET || 'dev-only-secret').digest(); }
   private maskEncrypted(value?: string | null) { return this.maskPlain(this.decryptSecret(value)); }
   private maskPlain(value: string) { if (!value) return null; if (value.length <= 4) return '****'; return `${'*'.repeat(Math.min(12, value.length - 4))}${value.slice(-4)}`; }

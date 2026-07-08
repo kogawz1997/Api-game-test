@@ -5,7 +5,7 @@ export class GenericProviderClient implements ProviderClient {
   constructor(private readonly providerCode: string) {}
 
   testConnection(config: ProviderRuntimeConfig) {
-    return this.callProvider(config, 'ping', { providerCode: config.providerCode });
+    return this.callProvider(config, 'ping', {});
   }
 
   launch(config: ProviderRuntimeConfig, payload: ProviderRequestPayload) {
@@ -35,7 +35,10 @@ export class GenericProviderClient implements ProviderClient {
 
     const timestamp = Math.floor(Date.now() / 1000).toString();
     const nonce = randomBytes(12).toString('hex');
+    const { providerCode: _ignoredProviderCode, action: _ignoredAction, ...safePayload } = payload;
+
     const body = {
+      ...safePayload,
       action,
       providerCode: config.providerCode,
       merchantId: config.merchantId || undefined,
@@ -43,7 +46,6 @@ export class GenericProviderClient implements ProviderClient {
       currency: config.currency || 'THB',
       language: config.language || 'th',
       callbackUrl: config.callbackUrl || undefined,
-      ...payload,
     };
 
     const rawBody = JSON.stringify(body);

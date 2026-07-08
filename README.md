@@ -18,11 +18,63 @@ POST /api/game
 GET /api/game
 ```
 
-ตัวอย่าง base URL บน Railway:
+## Provider Client Layer
+
+เพิ่มชั้นสำหรับต่อ API provider จริงแล้ว:
 
 ```txt
-https://YOUR-RAILWAY-DOMAIN.up.railway.app/api/game
+src/provider-clients/
+  provider-client.types.ts
+  provider-client.factory.ts
+  generic-provider.client.ts
 ```
+
+หน้าที่ของชั้นนี้:
+
+```txt
+1. อ่าน config จาก ProviderConfig
+2. สร้าง request payload
+3. สร้าง HMAC signature
+4. ส่ง header เช่น x-api-key, x-signature, x-timestamp, x-nonce
+5. ยิง POST ไป apiBaseUrl ของ provider
+```
+
+ตอนนี้มี `GenericProviderClient` สำหรับ provider ที่รับรูปแบบ single endpoint แบบมาตรฐาน:
+
+```json
+{
+  "action": "launch",
+  "providerCode": "PG",
+  "merchantId": "merchant_001",
+  "agentId": "agent_001",
+  "currency": "THB",
+  "language": "th"
+}
+```
+
+> ถ้าจะต่อค่ายจริง 100% ให้เพิ่ม client เฉพาะค่าย เช่น `PgClient`, `JiliClient`, `PpClient` แล้ว map ใน `ProviderClientFactory` เพราะแต่ละค่าย format request/signature ไม่เหมือนกันเลย มนุษย์คงตั้งใจให้เราเจ็บปวดเป็นราย provider
+
+## External Provider Mode
+
+ใน Credential settings ถ้าตั้ง:
+
+```json
+{
+  "walletMode": "external"
+}
+```
+
+ระบบ backend สามารถใช้ Provider Client Layer เพื่อยิง provider ภายนอกได้
+
+ถ้าตั้ง:
+
+```json
+{
+  "walletMode": "transfer"
+}
+```
+
+ระบบจะใช้ mock wallet ภายในเหมือนเดิม เหมาะสำหรับทดสอบหน้าเว็บ
 
 ## Credential settings ใช้จริงได้ไหม
 
@@ -36,8 +88,6 @@ https://YOUR-RAILWAY-DOMAIN.up.railway.app/api/game
 - มี audit log ทุกครั้งที่แก้ provider config
 - มี action ทดสอบ config ว่าข้อมูลครบไหม
 
-> ถ้าจะต่อค่ายจริง ต้องนำค่า config เหล่านี้ไปใช้ใน provider-specific client ของแต่ละค่าย เพราะแต่ละค่าย format request/signature ไม่เหมือนกัน โลก API ค่ายเกมไม่เคยเมตตาใคร
-
 ## Credential actions
 
 ### ดู config ทุกค่าย
@@ -46,14 +96,6 @@ https://YOUR-RAILWAY-DOMAIN.up.railway.app/api/game
 curl -X POST http://localhost:4000/api/game \
   -H "Content-Type: application/json" \
   -d '{"action":"provider_configs"}'
-```
-
-### ดู config รายค่าย
-
-```bash
-curl -X POST http://localhost:4000/api/game \
-  -H "Content-Type: application/json" \
-  -d '{"action":"provider_config","providerCode":"PG"}'
 ```
 
 ### บันทึก credential
@@ -79,36 +121,25 @@ curl -X POST http://localhost:4000/api/game \
   }'
 ```
 
-### ทดสอบว่า config พร้อมต่อไหม
+### เตรียมโหมด external provider
 
 ```bash
 curl -X POST http://localhost:4000/api/game \
   -H "Content-Type: application/json" \
-  -d '{"action":"test_provider_config","providerCode":"PG"}'
-```
-
-## ตัวอย่างเรียกจากเว็บ
-
-```js
-const API_URL = 'https://YOUR-RAILWAY-DOMAIN.up.railway.app/api/game';
-
-export async function saveProviderConfig(input) {
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action: 'upsert_provider_config', ...input })
-  });
-  return res.json();
-}
-
-export async function getProviderConfigs() {
-  const res = await fetch(API_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action: 'provider_configs' })
-  });
-  return res.json();
-}
+  -d '{
+    "action":"upsert_provider_config",
+    "providerCode":"PG",
+    "apiBaseUrl":"https://your-provider-gateway.example/api",
+    "merchantId":"merchant_001",
+    "agentId":"agent_001",
+    "apiKey":"api_key_here",
+    "secretKey":"secret_key_here",
+    "walletMode":"external",
+    "currency":"THB",
+    "language":"th",
+    "status":"active",
+    "changedBy":"admin"
+  }'
 ```
 
 ## Actions หลัก
@@ -129,18 +160,6 @@ provider_configs
 provider_config
 upsert_provider_config
 test_provider_config
-```
-
-## Mock Data ที่มีใน seed
-
-หลังรัน `pnpm prisma db seed` จะได้ข้อมูลตัวอย่าง:
-
-```txt
-Providers: 10 ค่าย
-Games: 36 เกม
-Wallets: 8 รายการ
-Transactions: 10 รายการ
-Sessions: 3 รายการ
 ```
 
 ## Quick Start

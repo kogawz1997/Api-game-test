@@ -6,7 +6,23 @@ import { MockProviderHmacGuard } from './security/mock-provider-hmac.guard';
 @Controller()
 export class MockProviderController {
   constructor(private readonly service: MockProviderService) {}
-  @Get('health') health() { return { success: true, service: 'mock-game-provider-api', timestamp: new Date().toISOString() }; }
+
+  @Get('health')
+  health() {
+    return { success: true, service: 'mock-game-provider-api', timestamp: new Date().toISOString() };
+  }
+
+  @Get('api/game')
+  getGatewayManifest() {
+    return this.service.getGatewayManifest();
+  }
+
+  @UseGuards(MockProviderHmacGuard)
+  @Post('api/game')
+  gateway(@Body() body: Record<string, any>) {
+    return this.service.gateway(body);
+  }
+
   @Get('mock-provider/providers') getProviders(@Query() query: ProviderQueryDto) { return this.service.getProviders(query); }
   @Get('mock-provider/games') getGames(@Query() query: GameQueryDto) { return this.service.getGames(query); }
   @Get('mock-provider/games/:gameCode') getGame(@Param('gameCode') gameCode: string) { return this.service.getGame(gameCode); }

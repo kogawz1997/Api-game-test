@@ -10,6 +10,79 @@ type TransactionType = 'transfer_in' | 'transfer_out' | 'bet' | 'win' | 'result'
 export class MockProviderService {
   constructor(private readonly prisma: PrismaService) {}
 
+  getGatewayManifest() {
+    return this.ok({
+      gatewayUrl: '/api/game',
+      method: 'POST',
+      description: 'Single endpoint gateway. Send action with payload to call every mock game provider function.',
+      actions: {
+        providers: { body: { action: 'providers', status: 'active' } },
+        games: { body: { action: 'games', providerCode: 'PG', category: 'slot', q: 'mahjong', status: 'active' } },
+        game: { body: { action: 'game', gameCode: 'PG-MAHJONG-WAYS' } },
+        launch: { body: { action: 'launch', memberId: 'member_001', providerCode: 'PG', gameCode: 'PG-MAHJONG-WAYS' } },
+        transfer_in: { body: { action: 'transfer_in', memberId: 'member_001', providerCode: 'PG', amount: 500, referenceId: 'TX-IN-UNIQUE-ID' } },
+        transfer_out: { body: { action: 'transfer_out', memberId: 'member_001', providerCode: 'PG', amount: 100, referenceId: 'TX-OUT-UNIQUE-ID' } },
+        balance: { body: { action: 'balance', memberId: 'member_001', providerCode: 'PG' } },
+        simulate_bet: { body: { action: 'simulate_bet', memberId: 'member_001', providerCode: 'PG', gameCode: 'PG-MAHJONG-WAYS', amount: 50, referenceId: 'BET-UNIQUE-ID' } },
+        simulate_win: { body: { action: 'simulate_win', memberId: 'member_001', providerCode: 'PG', gameCode: 'PG-MAHJONG-WAYS', amount: 120, referenceId: 'WIN-UNIQUE-ID' } },
+        simulate_result: { body: { action: 'simulate_result', memberId: 'member_001', providerCode: 'PG', gameCode: 'PG-MAHJONG-WAYS', betAmount: 50, winAmount: 120, referenceId: 'RESULT-UNIQUE-ID' } },
+        transactions: { body: { action: 'transactions', memberId: 'member_001', providerCode: 'PG', limit: 20 } }
+      }
+    });
+  }
+
+  async gateway(body: Record<string, any>) {
+    const action = String(body?.action || '').trim().toLowerCase();
+
+    if (!action) {
+      throw new BadRequestException({ success: false, code: 'MISSING_ACTION', message: 'Missing action in request body' });
+    }
+
+    switch (action) {
+      case 'providers':
+      case 'get_providers':
+        return this.getProviders(body as ProviderQueryDto);
+      case 'games':
+      case 'get_games':
+        return this.getGames(body as GameQueryDto);
+      case 'game':
+      case 'get_game':
+        if (!body.gameCode) throw new BadRequestException({ success: false, code: 'MISSING_GAME_CODE', message: 'gameCode is required' });
+        return this.getGame(String(body.gameCode));
+      case 'launch':
+      case 'launch_game':
+        return this.launch(body as LaunchGameDto);
+      case 'transfer_in':
+      case 'deposit_to_provider':
+        return this.transferIn(body as MoneyActionDto);
+      case 'transfer_out':
+      case 'withdraw_from_provider':
+        return this.transferOut(body as MoneyActionDto);
+      case 'balance':
+      case 'get_balance':
+        return this.getBalance(body as BalanceQueryDto);
+      case 'simulate_bet':
+      case 'bet':
+        return this.simulateBet(body as MoneyActionDto);
+      case 'simulate_win':
+      case 'win':
+        return this.simulateWin(body as MoneyActionDto);
+      case 'simulate_result':
+      case 'result':
+        return this.simulateResult(body as SimulateResultDto);
+      case 'transactions':
+      case 'get_transactions':
+        return this.getTransactions(body as TransactionsQueryDto);
+      default:
+        throw new BadRequestException({
+          success: false,
+          code: 'UNKNOWN_ACTION',
+          message: `Unknown action: ${action}`,
+          availableActions: ['providers', 'games', 'game', 'launch', 'transfer_in', 'transfer_out', 'balance', 'simulate_bet', 'simulate_win', 'simulate_result', 'transactions']
+        });
+    }
+  }
+
   async getProviders(query: ProviderQueryDto) {
     const where: Prisma.GameProviderWhereInput = {};
     if (query.providerCode) where.code = query.providerCode;

@@ -1,14 +1,20 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma, ProviderConfig, ProviderTransaction } from '@prisma/client';
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
+import { ProviderClientFactory } from '../provider-clients/provider-client.factory';
+import { ProviderClientResponse, ProviderRuntimeConfig } from '../provider-clients/provider-client.types';
 import { BalanceQueryDto, GameQueryDto, LaunchGameDto, MoneyActionDto, ProviderQueryDto, SimulateResultDto, TransactionsQueryDto } from './dto/common.dto';
 import { PrismaService } from '../prisma/prisma.service';
 
 type TransactionType = 'transfer_in' | 'transfer_out' | 'bet' | 'win' | 'result';
+type ExternalAction = 'launch' | 'transfer_in' | 'transfer_out' | 'balance';
 
 @Injectable()
 export class MockProviderService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly providerClientFactory: ProviderClientFactory,
+  ) {}
 
   getGatewayManifest() {
     return this.ok({
@@ -18,6 +24,10 @@ export class MockProviderService {
       credentialSettings: {
         description: 'Use these actions for the Credential settings page. Secret fields are stored encrypted-like and returned as masked only.',
         actions: ['provider_configs', 'provider_config', 'upsert_provider_config', 'test_provider_config']
+      },
+      providerClientLayer: {
+        description: 'If ProviderConfig.walletMode is external, launch/transfer/balance calls are routed through ProviderClientFactory to apiBaseUrl.',
+        mode: 'transfer = internal mock wallet, external = outbound provider API call'
       },
       actions: {
         providers: { body: { action: 'providers', status: 'active' } },
@@ -30,7 +40,7 @@ export class MockProviderService {
         transactions: { body: { action: 'transactions', memberId: 'member_001', providerCode: 'PG', limit: 20 } },
         provider_configs: { body: { action: 'provider_configs' } },
         provider_config: { body: { action: 'provider_config', providerCode: 'PG' } },
-        upsert_provider_config: { body: { action: 'upsert_provider_config', providerCode: 'PG', apiBaseUrl: 'https://mock-pg.provider.test/api', merchantId: 'merchant_001', agentId: 'agent_001', apiKey: 'api_key_here', secretKey: 'secret_key_here', webhookSecret: 'webhook_secret_here', ipWhitelist: ['127.0.0.1'], walletMode: 'transfer', currency: 'THB', language: 'th', status: 'active' } },
+        upsert_provider_config: { body: { action: 'upsert_provider_config', providerCode: 'PG', apiBaseUrl: 'https://mock-pg.provider.test/api', merchantId: 'merchant_001', agentId: 'agent_001', apiKey: 'api_key_here', secretKey: 'secret_key_here', webhookSecret: 'webhook_secret_here', ipWhitelist: ['127.0.0.1'], walletMode: 'external', currency: 'THB', language: 'th', status: 'active' } },
         test_provider_config: { body: { action: 'test_provider_config', providerCode: 'PG' } },
         simulate_bet: { body: { action: 'simulate_bet', memberId: 'member_001', providerCode: 'PG', gameCode: 'PG-MAHJONG-WAYS', amount: 50, referenceId: 'BET-UNIQUE-ID' } },
         simulate_win: { body: { action: 'simulate_win', memberId: 'member_001', providerCode: 'PG', gameCode: 'PG-MAHJONG-WAYS', amount: 120, referenceId: 'WIN-UNIQUE-ID' } },
@@ -85,7 +95,6 @@ export class MockProviderService {
     const providers = await this.prisma.gameProvider.findMany({ orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }] });
     const configs = await this.prisma.providerConfig.findMany();
     const byProvider = new Map(configs.map((config) => [config.providerCode, config]));
-
     return this.ok(providers.map((provider) => this.toMaskedConfig(provider.code, provider.name, byProvider.get(provider.code))));
   }
 
@@ -121,11 +130,7 @@ export class MockProviderService {
       status: String(body.status || before?.status || 'active')
     };
 
-    const config = await this.prisma.providerConfig.upsert({
-      where: { providerCode },
-      update: data,
-      create: data
-    });
+    const config = await this.prisma.providerConfig.upsert({ where: { providerCode }, update: data, create: data });
 
     await this.prisma.providerConfigAudit.create({
       data: {
@@ -148,21 +153,19 @@ export class MockProviderService {
     const config = await this.prisma.providerConfig.findUnique({ where: { providerCode } });
     if (!config) throw new NotFoundException({ success: false, code: 'PROVIDER_CONFIG_NOT_FOUND', message: 'Provider config not found' });
 
-    const missing = [] as string[];
-    if (!config.apiBaseUrl) missing.push('apiBaseUrl');
-    if (!config.apiKeyEnc) missing.push('apiKey');
-    if (!config.secretKeyEnc) missing.push('secretKey');
-    if (!config.merchantIdEnc && !config.agentIdEnc) missing.push('merchantIdOrAgentId');
+    const missing = this.getMissingConfigFields(config);
+    let status = missing.length === 0 ? 'ready' : 'missing_required_fields';
+    let message = missing.length === 0 ? 'Provider config is ready for sandbox integration' : `Missing: ${missing.join(', ')}`;
+    let externalTest: ProviderClientResponse | null = null;
 
-    const status = missing.length === 0 ? 'ready' : 'missing_required_fields';
-    const message = missing.length === 0 ? 'Provider config is ready for sandbox integration' : `Missing: ${missing.join(', ')}`;
+    if (missing.length === 0 && config.walletMode === 'external') {
+      externalTest = await this.providerClientFactory.getClient(providerCode).testConnection(this.toRuntimeConfig(config));
+      status = externalTest.success ? 'external_ready' : 'external_test_failed';
+      message = externalTest.success ? 'External provider responded successfully' : externalTest.error?.message || 'External provider test failed';
+    }
 
-    const updated = await this.prisma.providerConfig.update({
-      where: { providerCode },
-      data: { lastTestStatus: status, lastTestMessage: message, lastTestAt: new Date() }
-    });
-
-    return this.ok({ ...this.toMaskedConfig(provider.code, provider.name, updated), test: { status, message, missing } });
+    const updated = await this.prisma.providerConfig.update({ where: { providerCode }, data: { lastTestStatus: status, lastTestMessage: message, lastTestAt: new Date() } });
+    return this.ok({ ...this.toMaskedConfig(provider.code, provider.name, updated), test: { status, message, missing, external: externalTest } });
   }
 
   async getProviders(query: ProviderQueryDto) {
@@ -193,16 +196,30 @@ export class MockProviderService {
     const game = await this.prisma.game.findUnique({ where: { gameCode: body.gameCode }, include: { provider: true } });
     if (!game || game.providerCode !== body.providerCode) throw new NotFoundException({ success: false, code: 'GAME_NOT_FOUND', message: 'Game not found for this provider' });
     if (game.status !== 'active' || game.provider.status !== 'active') throw new BadRequestException({ success: false, code: 'GAME_INACTIVE', message: 'Game or provider is inactive' });
+
+    const external = await this.callExternalProviderIfEnabled('launch', body.providerCode, body);
+    if (external) return this.externalOrError(external);
+
     const sessionToken = `mock_${randomBytes(24).toString('hex')}`;
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60);
     const launchBaseUrl = process.env.MOCK_PROVIDER_LAUNCH_BASE_URL || 'http://localhost:4000/mock-game/play';
     const launchUrl = `${launchBaseUrl}?token=${encodeURIComponent(sessionToken)}&providerCode=${encodeURIComponent(body.providerCode)}&gameCode=${encodeURIComponent(body.gameCode)}&memberId=${encodeURIComponent(body.memberId)}`;
     await this.prisma.providerSession.create({ data: { memberId: body.memberId, providerCode: body.providerCode, gameCode: body.gameCode, sessionToken, launchUrl, expiresAt } });
-    return this.ok({ launchUrl, sessionToken, expiresAt });
+    return this.ok({ external: false, launchUrl, sessionToken, expiresAt });
   }
 
-  async transferIn(body: MoneyActionDto) { return this.createMoneyTransaction({ ...body, type: 'transfer_in', direction: 'credit', rawRequest: body }); }
-  async transferOut(body: MoneyActionDto) { return this.createMoneyTransaction({ ...body, type: 'transfer_out', direction: 'debit', rawRequest: body }); }
+  async transferIn(body: MoneyActionDto) {
+    const external = await this.callExternalProviderIfEnabled('transfer_in', body.providerCode, body);
+    if (external) return this.externalOrError(external);
+    return this.createMoneyTransaction({ ...body, type: 'transfer_in', direction: 'credit', rawRequest: body });
+  }
+
+  async transferOut(body: MoneyActionDto) {
+    const external = await this.callExternalProviderIfEnabled('transfer_out', body.providerCode, body);
+    if (external) return this.externalOrError(external);
+    return this.createMoneyTransaction({ ...body, type: 'transfer_out', direction: 'debit', rawRequest: body });
+  }
+
   async simulateBet(body: MoneyActionDto) { return this.createMoneyTransaction({ ...body, type: 'bet', direction: 'debit', rawRequest: body }); }
   async simulateWin(body: MoneyActionDto) { return this.createMoneyTransaction({ ...body, type: 'win', direction: 'credit', rawRequest: body }); }
 
@@ -224,8 +241,10 @@ export class MockProviderService {
   }
 
   async getBalance(query: BalanceQueryDto) {
+    const external = await this.callExternalProviderIfEnabled('balance', query.providerCode, query as unknown as Record<string, unknown>);
+    if (external) return this.externalOrError(external);
     const wallet = await this.prisma.providerWallet.findUnique({ where: { memberId_providerCode: { memberId: query.memberId, providerCode: query.providerCode } } });
-    return this.ok({ memberId: query.memberId, providerCode: query.providerCode, balance: wallet ? Number(wallet.balance) : 0 });
+    return this.ok({ external: false, memberId: query.memberId, providerCode: query.providerCode, balance: wallet ? Number(wallet.balance) : 0 });
   }
 
   async getTransactions(query: TransactionsQueryDto) {
@@ -254,6 +273,51 @@ export class MockProviderService {
     });
   }
 
+  private async callExternalProviderIfEnabled(action: ExternalAction, providerCode: string, payload: Record<string, unknown>) {
+    const config = await this.prisma.providerConfig.findUnique({ where: { providerCode } });
+    if (!config || config.status !== 'active' || config.walletMode !== 'external') return null;
+
+    const runtime = this.toRuntimeConfig(config);
+    const client = this.providerClientFactory.getClient(providerCode);
+
+    if (action === 'launch') return client.launch(runtime, payload as any);
+    if (action === 'transfer_in') return client.transferIn(runtime, payload as any);
+    if (action === 'transfer_out') return client.transferOut(runtime, payload as any);
+    return client.getBalance(runtime, payload as any);
+  }
+
+  private externalOrError(response: ProviderClientResponse) {
+    if (!response.success) return response;
+    return this.ok({ external: true, providerCode: response.providerCode, action: response.action, providerResponse: response.data });
+  }
+
+  private getMissingConfigFields(config: ProviderConfig) {
+    const missing = [] as string[];
+    if (!config.apiBaseUrl) missing.push('apiBaseUrl');
+    if (!config.apiKeyEnc) missing.push('apiKey');
+    if (!config.secretKeyEnc) missing.push('secretKey');
+    if (!config.merchantIdEnc && !config.agentIdEnc) missing.push('merchantIdOrAgentId');
+    return missing;
+  }
+
+  private toRuntimeConfig(config: ProviderConfig): ProviderRuntimeConfig {
+    return {
+      providerCode: config.providerCode,
+      apiBaseUrl: config.apiBaseUrl,
+      merchantId: this.decryptSecret(config.merchantIdEnc),
+      agentId: this.decryptSecret(config.agentIdEnc),
+      apiKey: this.decryptSecret(config.apiKeyEnc),
+      secretKey: this.decryptSecret(config.secretKeyEnc),
+      webhookSecret: this.decryptSecret(config.webhookSecretEnc),
+      ipWhitelist: this.parseIpWhitelist(config.ipWhitelist),
+      callbackUrl: config.callbackUrl,
+      walletMode: config.walletMode,
+      currency: config.currency,
+      language: config.language,
+      status: config.status
+    };
+  }
+
   private async ensureProviderActive(tx: Prisma.TransactionClient, providerCode: string) {
     const provider = await tx.gameProvider.findUnique({ where: { code: providerCode } });
     if (!provider) throw new NotFoundException({ success: false, code: 'PROVIDER_NOT_FOUND', message: 'Provider not found' });
@@ -277,29 +341,7 @@ export class MockProviderService {
   }
 
   private toMaskedConfig(providerCode: string, providerName: string, config?: ProviderConfig) {
-    return {
-      providerCode,
-      providerName,
-      configured: Boolean(config),
-      apiBaseUrl: config?.apiBaseUrl || null,
-      apiBaseUrlMasked: this.maskPlain(config?.apiBaseUrl || ''),
-      apiKeyMasked: this.maskEncrypted(config?.apiKeyEnc),
-      secretKeyMasked: this.maskEncrypted(config?.secretKeyEnc),
-      merchantIdMasked: this.maskEncrypted(config?.merchantIdEnc),
-      agentIdMasked: this.maskEncrypted(config?.agentIdEnc),
-      webhookSecretMasked: this.maskEncrypted(config?.webhookSecretEnc),
-      ipWhitelist: this.parseIpWhitelist(config?.ipWhitelist),
-      callbackUrl: config?.callbackUrl || null,
-      walletMode: config?.walletMode || 'transfer',
-      currency: config?.currency || 'THB',
-      language: config?.language || 'th',
-      status: config?.status || 'not_configured',
-      lastTestStatus: config?.lastTestStatus || null,
-      lastTestMessage: config?.lastTestMessage || null,
-      lastTestAt: config?.lastTestAt || null,
-      updatedAt: config?.updatedAt || null,
-      secretSafe: true
-    };
+    return { providerCode, providerName, configured: Boolean(config), apiBaseUrl: config?.apiBaseUrl || null, apiBaseUrlMasked: this.maskPlain(config?.apiBaseUrl || ''), apiKeyMasked: this.maskEncrypted(config?.apiKeyEnc), secretKeyMasked: this.maskEncrypted(config?.secretKeyEnc), merchantIdMasked: this.maskEncrypted(config?.merchantIdEnc), agentIdMasked: this.maskEncrypted(config?.agentIdEnc), webhookSecretMasked: this.maskEncrypted(config?.webhookSecretEnc), ipWhitelist: this.parseIpWhitelist(config?.ipWhitelist), callbackUrl: config?.callbackUrl || null, walletMode: config?.walletMode || 'transfer', currency: config?.currency || 'THB', language: config?.language || 'th', status: config?.status || 'not_configured', lastTestStatus: config?.lastTestStatus || null, lastTestMessage: config?.lastTestMessage || null, lastTestAt: config?.lastTestAt || null, updatedAt: config?.updatedAt || null, secretSafe: true };
   }
 
   private parseIpWhitelist(value?: string | null) {
@@ -334,19 +376,8 @@ export class MockProviderService {
     }
   }
 
-  private secretKey() {
-    return createHash('sha256').update(process.env.CREDENTIAL_ENCRYPTION_KEY || process.env.MOCK_PROVIDER_SECRET || 'dev-only-secret').digest();
-  }
-
-  private maskEncrypted(value?: string | null) {
-    return this.maskPlain(this.decryptSecret(value));
-  }
-
-  private maskPlain(value: string) {
-    if (!value) return null;
-    if (value.length <= 4) return '****';
-    return `${'*'.repeat(Math.min(12, value.length - 4))}${value.slice(-4)}`;
-  }
-
+  private secretKey() { return createHash('sha256').update(process.env.CREDENTIAL_ENCRYPTION_KEY || process.env.MOCK_PROVIDER_SECRET || 'dev-only-secret').digest(); }
+  private maskEncrypted(value?: string | null) { return this.maskPlain(this.decryptSecret(value)); }
+  private maskPlain(value: string) { if (!value) return null; if (value.length <= 4) return '****'; return `${'*'.repeat(Math.min(12, value.length - 4))}${value.slice(-4)}`; }
   private ok<T>(data: T) { return { success: true, data }; }
 }

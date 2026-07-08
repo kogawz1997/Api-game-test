@@ -1,4 +1,8 @@
 import { Injectable } from '@nestjs/common';
+import { EvoClient } from './clients/evo.client';
+import { JiliClient } from './clients/jili.client';
+import { PgClient } from './clients/pg.client';
+import { PpClient } from './clients/pp.client';
 import { GenericProviderClient } from './generic-provider.client';
 import { ProviderClient } from './provider-client.types';
 
@@ -7,8 +11,11 @@ export class ProviderClientFactory {
   getClient(providerCode: string): ProviderClient {
     const code = providerCode.trim().toUpperCase();
 
-    // ตอนนี้ใช้ generic client ที่ยิง single-endpoint provider format ได้ก่อน
-    // ถ้าต่อค่ายจริง ให้แตก class เฉพาะเช่น PgClient, JiliClient, PpClient แล้ว map ตรงนี้
+    if (code === 'PG') return new PgClient();
+    if (code === 'JILI') return new JiliClient();
+    if (code === 'PP') return new PpClient();
+    if (code === 'EVO') return new EvoClient();
+
     return new GenericProviderClient(code);
   }
 }

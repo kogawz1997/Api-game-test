@@ -18,10 +18,11 @@ export interface ProviderRuntimeConfig {
 
 export interface ProviderRequestPayload {
   memberId?: string;
-  providerCode: string;
+  providerCode?: string;
   gameCode?: string;
   amount?: number;
   referenceId?: string;
+  action?: string;
   [key: string]: unknown;
 }
 

@@ -27,7 +27,7 @@ export class MockProviderService {
         core: ['providers', 'games', 'game', 'launch', 'transfer_in', 'transfer_out', 'balance', 'transactions'],
         credentials: ['provider_configs', 'provider_config', 'upsert_provider_config', 'test_provider_config'],
         players: ['create_player', 'get_player', 'disable_player'],
-        callbacks: ['callback_bet', 'callback_win', 'callback_settle', 'callback_cancel', 'callback_rollback'],
+        callbacks: ['callback_bet', 'callback_win', 'callback_settle', 'callback_cancel', 'callback_rollback', 'cleanup_callback_nonces'],
         reports: ['provider_api_logs', 'get_round', 'report_rounds', 'report_summary', 'reconcile'],
       },
       providerClientLayer: {
@@ -83,6 +83,7 @@ export class MockProviderService {
       case 'callback_settle': return this.advancedGameService.callbackSettle(body);
       case 'callback_cancel': return this.advancedGameService.callbackCancel(body);
       case 'callback_rollback': return this.advancedGameService.callbackRollback(body);
+      case 'cleanup_callback_nonces': return this.advancedGameService.cleanupCallbackNonces(body);
       case 'provider_api_logs': return this.advancedGameService.getProviderApiLogs(body);
       case 'get_round': return this.advancedGameService.getRound(body);
       case 'report_rounds': return this.advancedGameService.getRounds(body);
@@ -111,39 +112,12 @@ export class MockProviderService {
   async upsertProviderConfig(body: Record<string, any>) {
     const providerCode = String(body.providerCode || '').trim().toUpperCase();
     if (!providerCode) throw new BadRequestException({ success: false, code: 'MISSING_PROVIDER_CODE', message: 'providerCode is required' });
-
     const provider = await this.prisma.gameProvider.findUnique({ where: { code: providerCode } });
     if (!provider) throw new NotFoundException({ success: false, code: 'PROVIDER_NOT_FOUND', message: 'Provider not found' });
-
     const before = await this.prisma.providerConfig.findUnique({ where: { providerCode } });
-    const data: Prisma.ProviderConfigUncheckedCreateInput = {
-      providerCode,
-      apiBaseUrl: String(body.apiBaseUrl || before?.apiBaseUrl || `https://mock-${providerCode.toLowerCase()}.provider.test/api`),
-      merchantIdEnc: body.merchantId !== undefined ? this.encryptSecret(String(body.merchantId)) : before?.merchantIdEnc,
-      agentIdEnc: body.agentId !== undefined ? this.encryptSecret(String(body.agentId)) : before?.agentIdEnc,
-      apiKeyEnc: body.apiKey !== undefined ? this.encryptSecret(String(body.apiKey)) : before?.apiKeyEnc,
-      secretKeyEnc: body.secretKey !== undefined ? this.encryptSecret(String(body.secretKey)) : before?.secretKeyEnc,
-      webhookSecretEnc: body.webhookSecret !== undefined ? this.encryptSecret(String(body.webhookSecret)) : before?.webhookSecretEnc,
-      ipWhitelist: Array.isArray(body.ipWhitelist) ? JSON.stringify(body.ipWhitelist) : body.ipWhitelist !== undefined ? String(body.ipWhitelist) : before?.ipWhitelist,
-      callbackUrl: body.callbackUrl !== undefined ? String(body.callbackUrl) : before?.callbackUrl,
-      walletMode: String(body.walletMode || before?.walletMode || 'transfer'),
-      currency: String(body.currency || before?.currency || 'THB'),
-      language: String(body.language || before?.language || 'th'),
-      status: String(body.status || before?.status || 'active'),
-    };
-
+    const data: Prisma.ProviderConfigUncheckedCreateInput = { providerCode, apiBaseUrl: String(body.apiBaseUrl || before?.apiBaseUrl || `https://mock-${providerCode.toLowerCase()}.provider.test/api`), merchantIdEnc: body.merchantId !== undefined ? this.encryptSecret(String(body.merchantId)) : before?.merchantIdEnc, agentIdEnc: body.agentId !== undefined ? this.encryptSecret(String(body.agentId)) : before?.agentIdEnc, apiKeyEnc: body.apiKey !== undefined ? this.encryptSecret(String(body.apiKey)) : before?.apiKeyEnc, secretKeyEnc: body.secretKey !== undefined ? this.encryptSecret(String(body.secretKey)) : before?.secretKeyEnc, webhookSecretEnc: body.webhookSecret !== undefined ? this.encryptSecret(String(body.webhookSecret)) : before?.webhookSecretEnc, ipWhitelist: Array.isArray(body.ipWhitelist) ? JSON.stringify(body.ipWhitelist) : body.ipWhitelist !== undefined ? String(body.ipWhitelist) : before?.ipWhitelist, callbackUrl: body.callbackUrl !== undefined ? String(body.callbackUrl) : before?.callbackUrl, walletMode: String(body.walletMode || before?.walletMode || 'transfer'), currency: String(body.currency || before?.currency || 'THB'), language: String(body.language || before?.language || 'th'), status: String(body.status || before?.status || 'active') };
     const config = await this.prisma.providerConfig.upsert({ where: { providerCode }, update: data, create: data });
-
-    await this.prisma.providerConfigAudit.create({
-      data: {
-        providerCode,
-        action: before ? 'update_provider_config' : 'create_provider_config',
-        changedBy: body.changedBy ? String(body.changedBy) : 'system',
-        maskedBefore: before ? JSON.stringify(this.toMaskedConfig(provider.code, provider.name, before)) : null,
-        maskedAfter: JSON.stringify(this.toMaskedConfig(provider.code, provider.name, config)),
-      },
-    });
-
+    await this.prisma.providerConfigAudit.create({ data: { providerCode, action: before ? 'update_provider_config' : 'create_provider_config', changedBy: body.changedBy ? String(body.changedBy) : 'system', maskedBefore: before ? JSON.stringify(this.toMaskedConfig(provider.code, provider.name, before)) : null, maskedAfter: JSON.stringify(this.toMaskedConfig(provider.code, provider.name, config)) } });
     return this.ok(this.toMaskedConfig(provider.code, provider.name, config));
   }
 
@@ -151,21 +125,13 @@ export class MockProviderService {
     if (!providerCode) throw new BadRequestException({ success: false, code: 'MISSING_PROVIDER_CODE', message: 'providerCode is required' });
     const provider = await this.prisma.gameProvider.findUnique({ where: { code: providerCode } });
     if (!provider) throw new NotFoundException({ success: false, code: 'PROVIDER_NOT_FOUND', message: 'Provider not found' });
-
     const config = await this.prisma.providerConfig.findUnique({ where: { providerCode } });
     if (!config) throw new NotFoundException({ success: false, code: 'PROVIDER_CONFIG_NOT_FOUND', message: 'Provider config not found' });
-
     const missing = this.getMissingConfigFields(config);
     let status = missing.length === 0 ? 'ready' : 'missing_required_fields';
     let message = missing.length === 0 ? 'Provider config is ready for sandbox integration' : `Missing: ${missing.join(', ')}`;
     let externalTest: ProviderClientResponse | null = null;
-
-    if (missing.length === 0 && config.walletMode === 'external') {
-      externalTest = await this.providerClientFactory.getClient(providerCode).testConnection(this.toRuntimeConfig(config));
-      status = externalTest.success ? 'external_ready' : 'external_test_failed';
-      message = externalTest.success ? 'External provider responded successfully' : externalTest.error?.message || 'External provider test failed';
-    }
-
+    if (missing.length === 0 && config.walletMode === 'external') { externalTest = await this.providerClientFactory.getClient(providerCode).testConnection(this.toRuntimeConfig(config)); status = externalTest.success ? 'external_ready' : 'external_test_failed'; message = externalTest.success ? 'External provider responded successfully' : externalTest.error?.message || 'External provider test failed'; }
     const updated = await this.prisma.providerConfig.update({ where: { providerCode }, data: { lastTestStatus: status, lastTestMessage: message, lastTestAt: new Date() } });
     return this.ok({ ...this.toMaskedConfig(provider.code, provider.name, updated), test: { status, message, missing, external: externalTest } });
   }
@@ -198,10 +164,8 @@ export class MockProviderService {
     const game = await this.prisma.game.findUnique({ where: { gameCode: body.gameCode }, include: { provider: true } });
     if (!game || game.providerCode !== body.providerCode) throw new NotFoundException({ success: false, code: 'GAME_NOT_FOUND', message: 'Game not found for this provider' });
     if (game.status !== 'active' || game.provider.status !== 'active') throw new BadRequestException({ success: false, code: 'GAME_INACTIVE', message: 'Game or provider is inactive' });
-
     const external = await this.callExternalProviderIfEnabled('launch', body.providerCode, body);
     if (external) return this.externalOrError(external);
-
     const sessionToken = `mock_${randomBytes(24).toString('hex')}`;
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60);
     const launchBaseUrl = process.env.MOCK_PROVIDER_LAUNCH_BASE_URL || 'http://localhost:4000/mock-game/play';
@@ -210,130 +174,28 @@ export class MockProviderService {
     return this.ok({ external: false, launchUrl, sessionToken, expiresAt });
   }
 
-  async transferIn(body: MoneyActionDto) {
-    const external = await this.callExternalProviderIfEnabled('transfer_in', body.providerCode, body);
-    if (external) return this.externalOrError(external);
-    return this.createMoneyTransaction({ ...body, type: 'transfer_in', direction: 'credit', rawRequest: body });
-  }
-
-  async transferOut(body: MoneyActionDto) {
-    const external = await this.callExternalProviderIfEnabled('transfer_out', body.providerCode, body);
-    if (external) return this.externalOrError(external);
-    return this.createMoneyTransaction({ ...body, type: 'transfer_out', direction: 'debit', rawRequest: body });
-  }
-
+  async transferIn(body: MoneyActionDto) { const external = await this.callExternalProviderIfEnabled('transfer_in', body.providerCode, body); if (external) return this.externalOrError(external); return this.createMoneyTransaction({ ...body, type: 'transfer_in', direction: 'credit', rawRequest: body }); }
+  async transferOut(body: MoneyActionDto) { const external = await this.callExternalProviderIfEnabled('transfer_out', body.providerCode, body); if (external) return this.externalOrError(external); return this.createMoneyTransaction({ ...body, type: 'transfer_out', direction: 'debit', rawRequest: body }); }
   async simulateBet(body: MoneyActionDto) { return this.createMoneyTransaction({ ...body, type: 'bet', direction: 'debit', rawRequest: body }); }
   async simulateWin(body: MoneyActionDto) { return this.createMoneyTransaction({ ...body, type: 'win', direction: 'credit', rawRequest: body }); }
 
   async simulateResult(body: SimulateResultDto) {
     const existed = await this.prisma.providerTransaction.findUnique({ where: { referenceId: body.referenceId } });
     if (existed) return this.ok(this.toTransactionResponse(existed, true));
-    return this.prisma.$transaction(async (tx) => {
-      await this.ensureProviderActive(tx, body.providerCode);
-      await this.ensureGameActive(tx, body.providerCode, body.gameCode);
-      const wallet = await this.getOrCreateWallet(tx, body.memberId, body.providerCode);
-      const beforeBalance = Number(wallet.balance);
-      const afterBalance = beforeBalance - body.betAmount + body.winAmount;
-      if (afterBalance < 0) throw new BadRequestException({ success: false, code: 'INSUFFICIENT_PROVIDER_BALANCE', message: 'Provider balance is not enough', data: { currentBalance: beforeBalance, requiredAmount: body.betAmount } });
-      const updatedWallet = await tx.providerWallet.update({ where: { memberId_providerCode: { memberId: body.memberId, providerCode: body.providerCode } }, data: { balance: new Prisma.Decimal(afterBalance) } });
-      const response = { providerBalance: Number(updatedWallet.balance), referenceId: body.referenceId, providerTransactionId: this.makeProviderTransactionId(body.providerCode, 'RESULT') };
-      const transaction = await tx.providerTransaction.create({ data: { memberId: body.memberId, providerCode: body.providerCode, gameCode: body.gameCode, type: 'result', amount: new Prisma.Decimal(body.winAmount - body.betAmount), beforeBalance: new Prisma.Decimal(beforeBalance), afterBalance: updatedWallet.balance, referenceId: body.referenceId, providerTransactionId: response.providerTransactionId, status: 'success', rawRequest: JSON.stringify(body), rawResponse: JSON.stringify(response) } });
-      return this.ok(this.toTransactionResponse(transaction, false));
-    });
+    return this.prisma.$transaction(async (tx) => { await this.ensureProviderActive(tx, body.providerCode); await this.ensureGameActive(tx, body.providerCode, body.gameCode); const wallet = await this.getOrCreateWallet(tx, body.memberId, body.providerCode); const beforeBalance = Number(wallet.balance); const afterBalance = beforeBalance - body.betAmount + body.winAmount; if (afterBalance < 0) throw new BadRequestException({ success: false, code: 'INSUFFICIENT_PROVIDER_BALANCE', message: 'Provider balance is not enough', data: { currentBalance: beforeBalance, requiredAmount: body.betAmount } }); const updatedWallet = await tx.providerWallet.update({ where: { memberId_providerCode: { memberId: body.memberId, providerCode: body.providerCode } }, data: { balance: new Prisma.Decimal(afterBalance) } }); const response = { providerBalance: Number(updatedWallet.balance), referenceId: body.referenceId, providerTransactionId: this.makeProviderTransactionId(body.providerCode, 'RESULT') }; const transaction = await tx.providerTransaction.create({ data: { memberId: body.memberId, providerCode: body.providerCode, gameCode: body.gameCode, type: 'result', amount: new Prisma.Decimal(body.winAmount - body.betAmount), beforeBalance: new Prisma.Decimal(beforeBalance), afterBalance: updatedWallet.balance, referenceId: body.referenceId, providerTransactionId: response.providerTransactionId, status: 'success', rawRequest: JSON.stringify(body), rawResponse: JSON.stringify(response) } }); return this.ok(this.toTransactionResponse(transaction, false)); });
   }
 
-  async getBalance(query: BalanceQueryDto) {
-    const external = await this.callExternalProviderIfEnabled('balance', query.providerCode, query as unknown as Record<string, unknown>);
-    if (external) return this.externalOrError(external);
-    const wallet = await this.prisma.providerWallet.findUnique({ where: { memberId_providerCode: { memberId: query.memberId, providerCode: query.providerCode } } });
-    return this.ok({ external: false, memberId: query.memberId, providerCode: query.providerCode, balance: wallet ? Number(wallet.balance) : 0 });
-  }
+  async getBalance(query: BalanceQueryDto) { const external = await this.callExternalProviderIfEnabled('balance', query.providerCode, query as unknown as Record<string, unknown>); if (external) return this.externalOrError(external); const wallet = await this.prisma.providerWallet.findUnique({ where: { memberId_providerCode: { memberId: query.memberId, providerCode: query.providerCode } } }); return this.ok({ external: false, memberId: query.memberId, providerCode: query.providerCode, balance: wallet ? Number(wallet.balance) : 0 }); }
+  async getTransactions(query: TransactionsQueryDto) { const where: Prisma.ProviderTransactionWhereInput = {}; if (query.memberId) where.memberId = query.memberId; if (query.providerCode) where.providerCode = query.providerCode; if (query.type) where.type = query.type; const transactions = await this.prisma.providerTransaction.findMany({ where, orderBy: { createdAt: 'desc' }, take: Math.min(query.limit || 50, 200) }); return this.ok(transactions.map((t) => this.toTransactionResponse(t, false))); }
 
-  async getTransactions(query: TransactionsQueryDto) {
-    const where: Prisma.ProviderTransactionWhereInput = {};
-    if (query.memberId) where.memberId = query.memberId;
-    if (query.providerCode) where.providerCode = query.providerCode;
-    if (query.type) where.type = query.type;
-    const transactions = await this.prisma.providerTransaction.findMany({ where, orderBy: { createdAt: 'desc' }, take: Math.min(query.limit || 50, 200) });
-    return this.ok(transactions.map((t) => this.toTransactionResponse(t, false)));
-  }
-
-  private async createMoneyTransaction(params: MoneyActionDto & { type: TransactionType; direction: 'credit' | 'debit'; rawRequest: unknown }) {
-    const existed = await this.prisma.providerTransaction.findUnique({ where: { referenceId: params.referenceId } });
-    if (existed) return this.ok(this.toTransactionResponse(existed, true));
-    return this.prisma.$transaction(async (tx) => {
-      await this.ensureProviderActive(tx, params.providerCode);
-      if (params.gameCode) await this.ensureGameActive(tx, params.providerCode, params.gameCode);
-      const wallet = await this.getOrCreateWallet(tx, params.memberId, params.providerCode);
-      const beforeBalance = Number(wallet.balance);
-      const afterBalance = params.direction === 'credit' ? beforeBalance + params.amount : beforeBalance - params.amount;
-      if (afterBalance < 0) throw new BadRequestException({ success: false, code: 'INSUFFICIENT_PROVIDER_BALANCE', message: 'Provider balance is not enough', data: { currentBalance: beforeBalance, requiredAmount: params.amount } });
-      const updatedWallet = await tx.providerWallet.update({ where: { memberId_providerCode: { memberId: params.memberId, providerCode: params.providerCode } }, data: { balance: new Prisma.Decimal(afterBalance) } });
-      const response = { providerBalance: Number(updatedWallet.balance), referenceId: params.referenceId, providerTransactionId: this.makeProviderTransactionId(params.providerCode, params.type.toUpperCase()) };
-      const transaction = await tx.providerTransaction.create({ data: { memberId: params.memberId, providerCode: params.providerCode, gameCode: params.gameCode, type: params.type, amount: new Prisma.Decimal(params.amount), beforeBalance: new Prisma.Decimal(beforeBalance), afterBalance: updatedWallet.balance, referenceId: params.referenceId, providerTransactionId: response.providerTransactionId, status: 'success', rawRequest: JSON.stringify(params.rawRequest), rawResponse: JSON.stringify(response) } });
-      return this.ok(this.toTransactionResponse(transaction, false));
-    });
-  }
-
-  private async callExternalProviderIfEnabled(action: ExternalAction, providerCode: string, payload: Record<string, unknown>) {
-    const config = await this.prisma.providerConfig.findUnique({ where: { providerCode } });
-    if (!config || config.status !== 'active' || config.walletMode !== 'external') return null;
-    const runtime = this.toRuntimeConfig(config);
-    const client = this.providerClientFactory.getClient(providerCode);
-    if (action === 'launch') return client.launch(runtime, payload as any);
-    if (action === 'transfer_in') return client.transferIn(runtime, payload as any);
-    if (action === 'transfer_out') return client.transferOut(runtime, payload as any);
-    return client.getBalance(runtime, payload as any);
-  }
-
-  private externalOrError(response: ProviderClientResponse) {
-    if (!response.success) return response;
-    return this.ok({ external: true, providerCode: response.providerCode, action: response.action, providerResponse: response.data });
-  }
-
-  private getMissingConfigFields(config: ProviderConfig) {
-    const missing = [] as string[];
-    if (!config.apiBaseUrl) missing.push('apiBaseUrl');
-    if (!config.apiKeyEnc) missing.push('apiKey');
-    if (!config.secretKeyEnc) missing.push('secretKey');
-    if (!config.merchantIdEnc && !config.agentIdEnc) missing.push('merchantIdOrAgentId');
-    return missing;
-  }
-
-  private toRuntimeConfig(config: ProviderConfig): ProviderRuntimeConfig {
-    return {
-      providerCode: config.providerCode,
-      apiBaseUrl: config.apiBaseUrl,
-      merchantId: this.decryptSecret(config.merchantIdEnc),
-      agentId: this.decryptSecret(config.agentIdEnc),
-      apiKey: this.decryptSecret(config.apiKeyEnc),
-      secretKey: this.decryptSecret(config.secretKeyEnc),
-      webhookSecret: this.decryptSecret(config.webhookSecretEnc),
-      ipWhitelist: this.parseIpWhitelist(config.ipWhitelist),
-      callbackUrl: config.callbackUrl,
-      walletMode: config.walletMode,
-      currency: config.currency,
-      language: config.language,
-      status: config.status,
-    };
-  }
-
-  private async ensureProviderActive(tx: Prisma.TransactionClient, providerCode: string) {
-    const provider = await tx.gameProvider.findUnique({ where: { code: providerCode } });
-    if (!provider) throw new NotFoundException({ success: false, code: 'PROVIDER_NOT_FOUND', message: 'Provider not found' });
-    if (provider.status !== 'active') throw new BadRequestException({ success: false, code: 'PROVIDER_INACTIVE', message: 'Provider is inactive' });
-  }
-
-  private async ensureGameActive(tx: Prisma.TransactionClient, providerCode: string, gameCode: string) {
-    const game = await tx.game.findUnique({ where: { gameCode } });
-    if (!game || game.providerCode !== providerCode) throw new NotFoundException({ success: false, code: 'GAME_NOT_FOUND', message: 'Game not found for this provider' });
-    if (game.status !== 'active') throw new BadRequestException({ success: false, code: 'GAME_INACTIVE', message: 'Game is inactive' });
-  }
-
-  private async getOrCreateWallet(tx: Prisma.TransactionClient, memberId: string, providerCode: string) {
-    return tx.providerWallet.upsert({ where: { memberId_providerCode: { memberId, providerCode } }, update: {}, create: { memberId, providerCode, balance: new Prisma.Decimal(0) } });
-  }
-
+  private async createMoneyTransaction(params: MoneyActionDto & { type: TransactionType; direction: 'credit' | 'debit'; rawRequest: unknown }) { const existed = await this.prisma.providerTransaction.findUnique({ where: { referenceId: params.referenceId } }); if (existed) return this.ok(this.toTransactionResponse(existed, true)); return this.prisma.$transaction(async (tx) => { await this.ensureProviderActive(tx, params.providerCode); if (params.gameCode) await this.ensureGameActive(tx, params.providerCode, params.gameCode); const wallet = await this.getOrCreateWallet(tx, params.memberId, params.providerCode); const beforeBalance = Number(wallet.balance); const afterBalance = params.direction === 'credit' ? beforeBalance + params.amount : beforeBalance - params.amount; if (afterBalance < 0) throw new BadRequestException({ success: false, code: 'INSUFFICIENT_PROVIDER_BALANCE', message: 'Provider balance is not enough', data: { currentBalance: beforeBalance, requiredAmount: params.amount } }); const updatedWallet = await tx.providerWallet.update({ where: { memberId_providerCode: { memberId: params.memberId, providerCode: params.providerCode } }, data: { balance: new Prisma.Decimal(afterBalance) } }); const response = { providerBalance: Number(updatedWallet.balance), referenceId: params.referenceId, providerTransactionId: this.makeProviderTransactionId(params.providerCode, params.type.toUpperCase()) }; const transaction = await tx.providerTransaction.create({ data: { memberId: params.memberId, providerCode: params.providerCode, gameCode: params.gameCode, type: params.type, amount: new Prisma.Decimal(params.amount), beforeBalance: new Prisma.Decimal(beforeBalance), afterBalance: updatedWallet.balance, referenceId: params.referenceId, providerTransactionId: response.providerTransactionId, status: 'success', rawRequest: JSON.stringify(params.rawRequest), rawResponse: JSON.stringify(response) } }); return this.ok(this.toTransactionResponse(transaction, false)); }); }
+  private async callExternalProviderIfEnabled(action: ExternalAction, providerCode: string, payload: Record<string, unknown>) { const config = await this.prisma.providerConfig.findUnique({ where: { providerCode } }); if (!config || config.status !== 'active' || config.walletMode !== 'external') return null; const runtime = this.toRuntimeConfig(config); const client = this.providerClientFactory.getClient(providerCode); if (action === 'launch') return client.launch(runtime, payload as any); if (action === 'transfer_in') return client.transferIn(runtime, payload as any); if (action === 'transfer_out') return client.transferOut(runtime, payload as any); return client.getBalance(runtime, payload as any); }
+  private externalOrError(response: ProviderClientResponse) { if (!response.success) return response; return this.ok({ external: true, providerCode: response.providerCode, action: response.action, providerResponse: response.data }); }
+  private getMissingConfigFields(config: ProviderConfig) { const missing = [] as string[]; if (!config.apiBaseUrl) missing.push('apiBaseUrl'); if (!config.apiKeyEnc) missing.push('apiKey'); if (!config.secretKeyEnc) missing.push('secretKey'); if (!config.merchantIdEnc && !config.agentIdEnc) missing.push('merchantIdOrAgentId'); return missing; }
+  private toRuntimeConfig(config: ProviderConfig): ProviderRuntimeConfig { return { providerCode: config.providerCode, apiBaseUrl: config.apiBaseUrl, merchantId: this.decryptSecret(config.merchantIdEnc), agentId: this.decryptSecret(config.agentIdEnc), apiKey: this.decryptSecret(config.apiKeyEnc), secretKey: this.decryptSecret(config.secretKeyEnc), webhookSecret: this.decryptSecret(config.webhookSecretEnc), ipWhitelist: this.parseIpWhitelist(config.ipWhitelist), callbackUrl: config.callbackUrl, walletMode: config.walletMode, currency: config.currency, language: config.language, status: config.status }; }
+  private async ensureProviderActive(tx: Prisma.TransactionClient, providerCode: string) { const provider = await tx.gameProvider.findUnique({ where: { code: providerCode } }); if (!provider) throw new NotFoundException({ success: false, code: 'PROVIDER_NOT_FOUND', message: 'Provider not found' }); if (provider.status !== 'active') throw new BadRequestException({ success: false, code: 'PROVIDER_INACTIVE', message: 'Provider is inactive' }); }
+  private async ensureGameActive(tx: Prisma.TransactionClient, providerCode: string, gameCode: string) { const game = await tx.game.findUnique({ where: { gameCode } }); if (!game || game.providerCode !== providerCode) throw new NotFoundException({ success: false, code: 'GAME_NOT_FOUND', message: 'Game not found for this provider' }); if (game.status !== 'active') throw new BadRequestException({ success: false, code: 'GAME_INACTIVE', message: 'Game is inactive' }); }
+  private async getOrCreateWallet(tx: Prisma.TransactionClient, memberId: string, providerCode: string) { return tx.providerWallet.upsert({ where: { memberId_providerCode: { memberId, providerCode } }, update: {}, create: { memberId, providerCode, balance: new Prisma.Decimal(0) } }); }
   private makeProviderTransactionId(providerCode: string, type: string) { return `${providerCode}-${type}-${randomBytes(8).toString('hex').toUpperCase()}`; }
   private toTransactionResponse(transaction: ProviderTransaction, duplicated: boolean) { return { id: transaction.id, memberId: transaction.memberId, providerCode: transaction.providerCode, gameCode: transaction.gameCode, type: transaction.type, amount: Number(transaction.amount), beforeBalance: Number(transaction.beforeBalance), afterBalance: Number(transaction.afterBalance), referenceId: transaction.referenceId, providerTransactionId: transaction.providerTransactionId, status: transaction.status, duplicated, createdAt: transaction.createdAt }; }
   private toMaskedConfig(providerCode: string, providerName: string, config?: ProviderConfig) { return { providerCode, providerName, configured: Boolean(config), apiBaseUrl: config?.apiBaseUrl || null, apiBaseUrlMasked: this.maskPlain(config?.apiBaseUrl || ''), apiKeyMasked: this.maskEncrypted(config?.apiKeyEnc), secretKeyMasked: this.maskEncrypted(config?.secretKeyEnc), merchantIdMasked: this.maskEncrypted(config?.merchantIdEnc), agentIdMasked: this.maskEncrypted(config?.agentIdEnc), webhookSecretMasked: this.maskEncrypted(config?.webhookSecretEnc), ipWhitelist: this.parseIpWhitelist(config?.ipWhitelist), callbackUrl: config?.callbackUrl || null, walletMode: config?.walletMode || 'transfer', currency: config?.currency || 'THB', language: config?.language || 'th', status: config?.status || 'not_configured', lastTestStatus: config?.lastTestStatus || null, lastTestMessage: config?.lastTestMessage || null, lastTestAt: config?.lastTestAt || null, updatedAt: config?.updatedAt || null, secretSafe: true }; }

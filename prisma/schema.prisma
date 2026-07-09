@@ -189,3 +189,16 @@ model ProviderApiLog {
   @@index([status])
   @@index([createdAt])
 }
+
+model CallbackNonce {
+  id           String   @id @default(cuid())
+  providerCode String
+  nonce        String
+  action       String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@unique([providerCode, nonce])
+  @@index([expiresAt])
+  @@index([createdAt])
+}

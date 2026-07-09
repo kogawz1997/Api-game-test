@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { BalanceQueryDto, GameQueryDto, LaunchGameDto, MoneyActionDto, ProviderQueryDto, SimulateResultDto, TransactionsQueryDto } from './dto/common.dto';
 import { MockProviderService } from './mock-provider.service';
 import { MockProviderHmacGuard } from './security/mock-provider-hmac.guard';
@@ -19,8 +19,10 @@ export class MockProviderController {
 
   @UseGuards(MockProviderHmacGuard)
   @Post('api/game')
-  gateway(@Body() body: Record<string, any>) {
-    return this.service.gateway(body);
+  gateway(@Body() body: Record<string, any>, @Req() request: any) {
+    const forwardedFor = request.headers?.['x-forwarded-for'];
+    const clientIp = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor || request.ip || request.socket?.remoteAddress || '';
+    return this.service.gateway({ ...body, __clientIp: clientIp, __headers: request.headers || {} });
   }
 
   @Get('mock-provider/providers') getProviders(@Query() query: ProviderQueryDto) { return this.service.getProviders(query); }
